@@ -7,32 +7,6 @@ const Redis = require("ioredis");
 
 console.log("--- Video Chat Server Starting ---");
 
-// ========== CRITICAL CORS FIX ========== //
-// Add this section right here
-app.use((req, res, next) => {
-  const allowedOrigins = [
-    "https://barshatalk-frontend.vercel.app",
-    "http://localhost:5500" // For local testing
-  ];
-  
-  const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  }
-  
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-  
-  next();
-});
-// ========== END CORS FIX ========== //
-
 // 1. Fixed Redis connection
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 let redisClient;
@@ -83,7 +57,6 @@ app.get("/api/turn-credentials", (req, res) => {
   }
 });
 
-// Existing CORS middleware
 app.use(cors({
   origin: process.env.FRONTEND_URL || "https://barshatalk-frontend.vercel.app",
   credentials: true
@@ -181,8 +154,7 @@ async function disconnectVideoUser(socket) {
 const io = new Server(http, {
   cors: {
     origin: process.env.FRONTEND_URL || "https://barshatalk-frontend.vercel.app",
-    methods: ["GET", "POST"],
-    credentials: true
+    methods: ["GET", "POST"]
   }
 });
 
