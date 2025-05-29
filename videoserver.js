@@ -5,23 +5,26 @@ const http = require("http").createServer(app);
 const { Server } = require("socket.io");
 const Redis = require("ioredis");
 
-console.log("--- Video Chat Server Starting ---");
+console.log("--- BarshaTalk Video Server Starting ---");
 
 // ========== CRITICAL CORS FIX ========== //
-// Add this section right here
 app.use((req, res, next) => {
+  // Allowed domains
   const allowedOrigins = [
     "https://barshatalk-frontend.vercel.app",
-    "http://localhost:5500" // For local testing
+    "https://barshatalk-frontend.vercel.app",
+    "http://localhost:5500"
   ];
   
+  // Check if request origin is allowed
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
   
+  // Set CORS headers
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Allow-Credentials", "true");
   
   // Handle preflight requests
@@ -33,19 +36,15 @@ app.use((req, res, next) => {
 });
 // ========== END CORS FIX ========== //
 
-// 1. Fixed Redis connection
+// --- Redis Connection ---
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 let redisClient;
 
 if (REDIS_URL) {
   try {
-    if (REDIS_URL.includes('rediss://')) {
-      redisClient = new Redis(REDIS_URL, {
-        tls: { rejectUnauthorized: false }
-      });
-    } else {
-      redisClient = new Redis(REDIS_URL);
-    }
+    // Connect to Redis (no password needed)
+    redisClient = new Redis(REDIS_URL);
+    
     redisClient.on('connect', () => console.log('✅ Redis connected'));
     redisClient.on('error', (err) => console.error('Redis error:', err));
   } catch (error) {
@@ -57,9 +56,10 @@ if (REDIS_URL) {
   redisClient = null;
 }
 
-// 2. Fixed TURN server config
+// --- TURN Credentials Endpoint ---
 app.get("/api/turn-credentials", (req, res) => {
   try {
+    // Return TURN server configuration
     res.json({
       iceServers: [
         { urls: "stun:fr-turn2.xirsys.com" },
@@ -79,11 +79,12 @@ app.get("/api/turn-credentials", (req, res) => {
     });
   } catch (error) {
     console.error('Error generating TURN credentials:', error);
+    // Fallback to public STUN server
     res.json({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
   }
 });
 
-// Existing CORS middleware
+// --- Middleware ---
 app.use(cors({
   origin: process.env.FRONTEND_URL || "https://barshatalk-frontend.vercel.app",
   credentials: true
@@ -91,10 +92,12 @@ app.use(cors({
 
 app.use(express.static("public"));
 
+// --- Redis Keys ---
 const VIDEO_WAITING_USERS_KEY = "videochat:waiting";
 const VIDEO_PARTNERS_KEY_PREFIX = "videochat:partner:";
 const VIDEO_PROFILES_KEY_PREFIX = "videochat:profile:";
 
+// --- User Pairing Functions ---
 async function pairVideoUsers(socket1, socket2) {
   if (!redisClient) return;
   
@@ -102,15 +105,17 @@ async function pairVideoUsers(socket1, socket2) {
     const partner1Key = `${VIDEO_PARTNERS_KEY_PREFIX}${socket1.id}`;
     const partner2Key = `${VIDEO_PARTNERS_KEY_PREFIX}${socket2.id}`;
     
-    // Get profiles
+    // Get user profiles
     const profile1 = await redisClient.get(`${VIDEO_PROFILES_KEY_PREFIX}${socket1.id}`) || '{}';
     const profile2 = await redisClient.get(`${VIDEO_PROFILES_KEY_PREFIX}${socket2.id}`) || '{}';
     
+    // Save partnership in Redis
     await redisClient.multi()
       .set(partner1Key, socket2.id)
       .set(partner2Key, socket1.id)
       .exec();
     
+    // Notify both users
     socket1.emit("matched", { 
       partnerId: socket2.id, 
       initiator: true,
@@ -136,6 +141,7 @@ async function findVideoPartner(socket) {
   }
   
   try {
+    // Find a waiting partner
     const partnerId = await redisClient.spop(VIDEO_WAITING_USERS_KEY);
     
     if (partnerId && partnerId !== socket.id) {
@@ -143,9 +149,11 @@ async function findVideoPartner(socket) {
       if (partnerSocket) {
         await pairVideoUsers(socket, partnerSocket);
       } else {
+        // Retry if partner disconnected
         await findVideoPartner(socket);
       }
     } else {
+      // Add to waiting list if no partner found
       await redisClient.sadd(VIDEO_WAITING_USERS_KEY, socket.id);
       socket.emit("waiting");
     }
@@ -163,21 +171,25 @@ async function disconnectVideoUser(socket) {
     const partnerId = await redisClient.get(partnerKey);
     
     if (partnerId) {
+      // Notify partner about disconnection
       const partnerSocket = io.sockets.sockets.get(partnerId);
       if (partnerSocket) {
         partnerSocket.emit("partnerDisconnected");
       }
       
+      // Cleanup Redis entries
       await redisClient.del(partnerKey);
       await redisClient.del(`${VIDEO_PARTNERS_KEY_PREFIX}${partnerId}`);
     }
     
+    // Remove from waiting list
     await redisClient.srem(VIDEO_WAITING_USERS_KEY, socket.id);
   } catch (error) {
     console.error('Error disconnecting video user:', error);
   }
 }
 
+// --- Socket.IO Server ---
 const io = new Server(http, {
   cors: {
     origin: process.env.FRONTEND_URL || "https://barshatalk-frontend.vercel.app",
@@ -186,11 +198,13 @@ const io = new Server(http, {
   }
 });
 
+// --- Socket.IO Event Handlers ---
 io.on("connection", (socket) => {
   console.log(`Video user connected: ${socket.id}`);
 
+  // User is ready to chat
   socket.on("ready", async (data) => {
-    // Save profile
+    // Save user profile
     if (redisClient && data && data.nickname) {
       try {
         await redisClient.set(
@@ -205,9 +219,11 @@ io.on("connection", (socket) => {
       }
     }
     
+    // Find a chat partner
     await findVideoPartner(socket);
   });
 
+  // WebRTC signaling events
   socket.on("offer", (data) => {
     if (!data.to || !data.offer) return;
     io.to(data.to).emit("offer", { ...data, from: socket.id });
@@ -223,24 +239,27 @@ io.on("connection", (socket) => {
     io.to(data.to).emit("candidate", { ...data, from: socket.id });
   });
 
+  // User reactions (hearts)
   socket.on("reaction", (data) => {
     if (!data.to) return;
     io.to(data.to).emit("reaction", { ...data, from: socket.id });
   });
 
+  // Request new partner
   socket.on("next", async () => {
     await disconnectVideoUser(socket);
     socket.emit("waiting");
   });
 
+  // Cleanup on disconnect
   socket.on("disconnect", async () => {
     await disconnectVideoUser(socket);
   });
 });
 
+// --- Start Server ---
 const PORT = process.env.PORT || 3001;
 http.listen(PORT, () => {
   console.log(`✅ Video chat server running on port ${PORT}`);
+  console.log(`✅ CORS enabled for: https://barshatalk-frontend.vercel.app`);
 });
-
-
